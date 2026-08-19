@@ -1,0 +1,61 @@
+/*
+ * Kahani — global resets, pastel theme, kid-friendly defaults.
+ *
+ * Palette (pastel, never saturated):
+ *   pink    #FFD6E7
+ *   sky     #C7E9FF
+ *   mint    #C9F7E1
+ *   yellow  #FFF4C2
+ *   lavender #E2D6FF
+ *
+ * Foreground is always a soft dark grey #3a2a3a (not pure black) so
+ * nothing feels harsh. Type is a rounded sans (Fredoka for headings,
+ * Quicksand for body) — both from Google Fonts.
+ */
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'Quicksand', system-ui, -apple-system, sans-serif;
+  font-weight: 500;
+  color: #3a2a3a;
+  background: linear-gradient(160deg, #FFF4F8 0%, #E8F4FF 50%, #F1FFF0 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+h1, h2, h3 {
+  font-family: 'Fredoka', system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  margin: 0;
+}
+
+input, textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+/* Big, forgiving tap targets everywhere */
+button, .tap-target, input[type="file"] + label {
+  min-height: 56px;
+  min-width: 56px;
+}

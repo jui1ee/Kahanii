@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Venv
+.venv/
+venv/
+
+# Downloaded dataset cache
+.cache/
+
+# But keep the static/signs dictionary files (clips + dictionary.json)
+!static/signs/
+!static/signs/**
