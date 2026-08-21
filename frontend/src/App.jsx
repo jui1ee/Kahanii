@@ -293,7 +293,14 @@ function PlaybackScreen({ story, onExit }) {
   // to start the next unit. We deliberately do NOT wait for the audio
   // utterance's onend or the <video> element's onended — both can fail to
   // fire reliably, and either way the timer gives a predictable cadence.
-  const UNIT_DURATION_MS = 1250
+  const UNIT_DURATION_MS = 1350
+
+  // Post-roll hold after the last unit speaks. Without this, the final
+  // word/letter is shown for its full UNIT_DURATION_MS but then resets
+  // immediately, which feels abrupt on short stories ("night" alone gets
+  // its last letter cut off mid-gesture). Hold the last active state for
+  // this many ms before clearing.
+  const POST_ROLL_MS = 700
 
   // For each token, build a "spoken surface".
   //   - sign_video token: surface = display_word.
@@ -417,11 +424,17 @@ function PlaybackScreen({ story, onExit }) {
     const speakUnit = (idx) => {
       if (cancelledRef.current) return
       if (idx >= spokenUnits.length) {
-        setPlaying(false)
-        setActiveIdx(-1)
-        setActiveLetter(0)
-        setLetterSequence([])
-        utteranceRef.current = null
+        // End of story: don't reset immediately — hold the last active
+        // word/letter for POST_ROLL_MS so the user actually sees it.
+        gapTimerRef.current = setTimeout(() => {
+          gapTimerRef.current = null
+          if (cancelledRef.current) return
+          setPlaying(false)
+          setActiveIdx(-1)
+          setActiveLetter(0)
+          setLetterSequence([])
+          utteranceRef.current = null
+        }, POST_ROLL_MS)
         return
       }
       const unit = spokenUnits[idx]
@@ -447,7 +460,7 @@ function PlaybackScreen({ story, onExit }) {
       // Schedule the advance. We rely on this timer alone — not on
       // u.onend or <video>.onEnded — because those have been the source
       // of stuck-state bugs in repeated same-clip units and short
-      // utterances. The user said: "1.25 seconds and move on".
+      // utterances.
       gapTimerRef.current = setTimeout(() => {
         gapTimerRef.current = null
         speakUnit(idx + 1)
@@ -516,16 +529,18 @@ function PlaybackScreen({ story, onExit }) {
     return activeToken.sign_video
   })()
 
-  // Explicit src+play hook for sign-video tokens. Runs whenever
-  // currentVideoSrc changes (i.e., when the active unit's video path
-  // changes). For back-to-back units of the same clip, React's string
-  // dep equality means this effect won't refire — that's fine, since
-  // the timer above drives the cadence, not this.
+  // Explicit src+play hook for sign-video tokens (and any token whose
+  // currentVideoSrc just changed). Force the video element to load the
+  // new clip and start playing. We .load() before .play() to make sure
+  // the browser actually fetches the media — relying on autoPlay +
+  // <source src> alone is unreliable when an element persists across
+  // many unit transitions.
   useEffect(() => {
     const v = videoRef.current
     if (!v || !currentVideoSrc) return
+    // Always reset and reload. Cheap for matching src (browser no-ops
+    // fetch); critical for a fresh src on a persistent element.
     v.src = currentVideoSrc
-    v.loop = false
     v.currentTime = 0
     v.load()
     v.play().catch(() => {})
@@ -590,6 +605,7 @@ function PlaybackScreen({ story, onExit }) {
                 autoPlay
                 muted
                 playsInline
+                preload="auto"
               >
                 <source src={currentVideoSrc} type="video/mp4" />
               </video>
