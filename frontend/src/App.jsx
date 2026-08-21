@@ -280,82 +280,112 @@ function PlaybackScreen({ story, onExit }) {
   const [activeLetter, setActiveLetter] = useState(0)
   const [letterSequence, setLetterSequence] = useState([]) // for fingerspell mode
   const [playing, setPlaying] = useState(false)
-  const [speed, setSpeed] = useState(1.0)
+  const [speed, setSpeed] = useState(0.8)   // kid-friendly default; user can hit Normal for 1.0×
 
   const videoRef = useRef(null)
   const utteranceRef = useRef(null)
   const cancelledRef = useRef(false)
+  const gapTimerRef = useRef(null)
 
-  // Build the source string the browser will speak. We use the
-  // display_word joined by spaces — exactly the same order as the
-  // tokens array, so onboundary → token index mapping is deterministic.
-  const sourceText = useMemo(() => tokens.map((t) => t.display_word).join(' '), [tokens])
+  // Kid-friendly default: each spoken unit (single letter for fingerspell
+  // words, whole word for sign-video) gets exactly UNIT_DURATION_MS of
+  // stage time. Audio starts at t=0; a setTimeout fires at UNIT_DURATION_MS
+  // to start the next unit. We deliberately do NOT wait for the audio
+  // utterance's onend or the <video> element's onended — both can fail to
+  // fire reliably, and either way the timer gives a predictable cadence.
+  const UNIT_DURATION_MS = 1250
 
-  // Pre-compute the cumulative character offset of each token within
-  // sourceText. This lets us map SpeechSynthesisEvent.charIndex back to
-  // a token index in O(1).
-  const tokenOffsets = useMemo(() => {
-    const offsets = []
-    let pos = 0
-    for (const t of tokens) {
-      offsets.push(pos)
-      pos += t.display_word.length + 1 // +1 for the space separator
-    }
-    return offsets
+  // For each token, build a "spoken surface".
+  //   - sign_video token: surface = display_word.
+  //   - fingerspell token: surface = uppercased letters separated by ". "
+  //     with a trailing ".", e.g. "T. H. E.". The trailing "." forces the
+  //     TTS engine to insert a brief pause between letters.
+  // We no longer need per-letter charIndex spans — the new playback walks
+  // spokenUnits and speaks each unit (letter or whole word) as its own
+  // utterance with an explicit gap between them.
+  const spokenSegments = useMemo(() => {
+    return tokens.map((t, idx) => {
+      if (!t.is_fingerspelling) {
+        return { tokenIdx: idx, kind: 'word', surface: t.display_word }
+      }
+      const chars = t.display_word
+        .toLowerCase()
+        .split('')
+        .filter((c) => /[a-z0-9]/.test(c))
+      if (chars.length === 0) {
+        return { tokenIdx: idx, kind: 'word', surface: t.display_word }
+      }
+      const surface = chars
+        .map((ch) => ch.toUpperCase())
+        .reduce((acc, ch, i) => acc + (i === 0 ? '' : '. ') + ch, '') + '.'
+      return { tokenIdx: idx, kind: 'letters', surface, letters: chars.map((c) => c.toUpperCase()) }
+    })
   }, [tokens])
 
-  const findTokenIdx = useCallback(
-    (charIndex) => {
-      // Binary search for the token whose [start, end) range contains charIndex.
-      let lo = 0
-      let hi = tokens.length - 1
-      while (lo < hi) {
-        const mid = (lo + hi + 1) >> 1
-        if (tokenOffsets[mid] <= charIndex) lo = mid
-        else hi = mid - 1
+  // Flatten spokenSegments into one entry per spoken unit. Each unit is
+  // either a single letter/digit (for fingerspelled tokens) or a whole
+  // word (for sign_video tokens). playFromStart walks this list and speaks
+  // each unit with an explicit gap between them.
+  const spokenUnits = useMemo(() => {
+    const units = []
+    for (const seg of spokenSegments) {
+      if (seg.kind === 'word') {
+        units.push({ tokenIdx: seg.tokenIdx, letterIdx: 0, surface: seg.surface })
+      } else {
+        for (let li = 0; li < seg.letters.length; li++) {
+          units.push({
+            tokenIdx: seg.tokenIdx,
+            letterIdx: li,
+            surface: seg.letters[li],
+          })
+        }
       }
-      return lo
-    },
-    [tokens, tokenOffsets]
-  )
+    }
+    return units
+  }, [spokenSegments])
 
   // Update which video is shown based on the active token.
   useEffect(() => {
     if (activeIdx < 0 || activeIdx >= tokens.length) return
     const tok = tokens[activeIdx]
     if (tok.is_fingerspelling) {
-      // Build the letter clip sequence from the lemma.
-      const letters = tok.lemma.toLowerCase().split('').filter((c) => /[a-z]/.test(c))
-      setLetterSequence(letters)
+      // Build the per-character clip sequence from the display word.
+      // Each entry is { char, kind: 'letter' | 'digit' } so the renderer
+      // can pick the right clip folder for letters vs digits.
+      const seq = tok.display_word
+        .toLowerCase()
+        .split('')
+        .map((c) => {
+          if (/[a-z]/.test(c)) return { char: c, kind: 'letter' }
+          if (/[0-9]/.test(c)) return { char: c, kind: 'digit' }
+          return null
+        })
+        .filter(Boolean)
+      setLetterSequence(seq)
       setActiveLetter(0)
     } else {
       setLetterSequence([])
     }
   }, [activeIdx, tokens])
 
-  // When the active letter changes (within a fingerspelling word),
-  // point the video at that letter's clip and restart playback.
+  // When the active character changes (within a fingerspelling word),
+  // point the video at that letter's clip and restart playback. The
+  // explicit [currentVideoSrc] hook below handles sign-video tokens
+  // (where letterSequence is empty).
   useEffect(() => {
     if (letterSequence.length === 0) return
     const v = videoRef.current
     if (!v) return
-    const src = `/static/signs/_letters/${letterSequence[activeLetter]}.mp4`
+    const item = letterSequence[activeLetter]
+    const folder = item.kind === 'digit' ? '_digits' : '_letters'
+    const src = `/static/signs/${folder}/${item.char}.mp4`
     v.src = src
     v.loop = true
     v.play().catch(() => {})
   }, [letterSequence, activeLetter])
 
-  // Advance to next letter when the current letter clip ends.
-  const onLetterVideoEnded = () => {
-    if (letterSequence.length === 0) return
-    if (activeLetter < letterSequence.length - 1) {
-      setActiveLetter((i) => i + 1)
-    } else {
-      // Restart the whole word so fingerspelling loops while the
-      // utterance is still talking.
-      setActiveLetter(0)
-    }
-  }
+  // Advance is driven by SpeechSynthesisUtterance.onboundary (audio is the
+// timeline). The video element just loops the current letter's clip.
 
   const playFromStart = useCallback(() => {
     if (!('speechSynthesis' in window)) {
@@ -363,58 +393,91 @@ function PlaybackScreen({ story, onExit }) {
       return
     }
     cancelledRef.current = false
-    setActiveIdx(0)
+    if (gapTimerRef.current) {
+      clearTimeout(gapTimerRef.current)
+      gapTimerRef.current = null
+    }
+    setActiveIdx(-1)
+    setActiveLetter(0)
+    setLetterSequence([])
     setPlaying(true)
 
     // Cancel anything in flight first.
     window.speechSynthesis.cancel()
 
-    const u = new SpeechSynthesisUtterance(sourceText)
-    u.rate = speed
-    u.pitch = 1.05 // a touch higher for kids
-    u.lang = 'en-US'
-    u.onboundary = (e) => {
+    // Walk spokenUnits sequentially. Each unit gets exactly UNIT_DURATION_MS
+    // of stage time: at t=0 we speak the surface (a letter/digit for
+    // fingerspell tokens, the whole word for sign-video); a setTimeout
+    // at t=UNIT_DURATION_MS advances to the next unit. Audio and video
+    // do NOT gate the advance — they've been unreliable in browsers
+    // (especially for short utterances and same-clip repeated units).
+    // The <video> element is driven by separate effects/handlers and
+    // simply shows whatever clip corresponds to the active unit at any
+    // given moment.
+    const speakUnit = (idx) => {
       if (cancelledRef.current) return
-      // Some engines fire onboundary with charName='sentence' instead
-      // of useful charIndex — guard.
-      if (typeof e.charIndex !== 'number' || e.charIndex < 0) return
-      const idx = findTokenIdx(e.charIndex)
-      if (idx !== activeIdxRef.current) {
-        activeIdxRef.current = idx
-        setActiveIdx(idx)
+      if (idx >= spokenUnits.length) {
+        setPlaying(false)
+        setActiveIdx(-1)
+        setActiveLetter(0)
+        setLetterSequence([])
+        utteranceRef.current = null
+        return
       }
-    }
-    u.onend = () => {
-      if (cancelledRef.current) return
-      setPlaying(false)
-      setActiveIdx(-1)
-    }
-    u.onerror = () => {
-      setPlaying(false)
-      setActiveIdx(-1)
+      const unit = spokenUnits[idx]
+      const u = new SpeechSynthesisUtterance(unit.surface)
+      u.rate = speed
+      u.pitch = 1.05
+      u.lang = 'en-US'
+      u.onstart = () => {
+        if (cancelledRef.current) return
+        activeStateRef.current = { tokenIdx: unit.tokenIdx, letterIdx: unit.letterIdx }
+        setActiveIdx(unit.tokenIdx)
+        setActiveLetter(unit.letterIdx)
+      }
+      u.onerror = () => {
+        if (cancelledRef.current) return
+        setPlaying(false)
+        setActiveIdx(-1)
+        setActiveLetter(0)
+        setLetterSequence([])
+      }
+      utteranceRef.current = u
+      window.speechSynthesis.speak(u)
+      // Schedule the advance. We rely on this timer alone — not on
+      // u.onend or <video>.onEnded — because those have been the source
+      // of stuck-state bugs in repeated same-clip units and short
+      // utterances. The user said: "1.25 seconds and move on".
+      gapTimerRef.current = setTimeout(() => {
+        gapTimerRef.current = null
+        speakUnit(idx + 1)
+      }, UNIT_DURATION_MS)
     }
 
-    utteranceRef.current = u
-    activeIdxRef.current = 0
-    window.speechSynthesis.speak(u)
-  }, [sourceText, speed, findTokenIdx])
+    speakUnit(0)
+  }, [spokenUnits, speed])
 
-  // Mirror activeIdx into a ref so the onboundary closure sees the
-  // latest value without re-binding the utterance on every keystroke.
-  const activeIdxRef = useRef(-1)
-  useEffect(() => {
-    activeIdxRef.current = activeIdx
-  }, [activeIdx])
+  // Mirror the active (tokenIdx, letterIdx) into a ref. Kept for any future
+  // async callback that needs the latest value without re-binding.
+  const activeStateRef = useRef({ tokenIdx: -1, letterIdx: 0 })
 
   const pause = () => {
     cancelledRef.current = true
     window.speechSynthesis.cancel()
+    if (gapTimerRef.current) {
+      clearTimeout(gapTimerRef.current)
+      gapTimerRef.current = null
+    }
     setPlaying(false)
   }
 
   const restart = () => {
     cancelledRef.current = true
     window.speechSynthesis.cancel()
+    if (gapTimerRef.current) {
+      clearTimeout(gapTimerRef.current)
+      gapTimerRef.current = null
+    }
     // Reset video.
     const v = videoRef.current
     if (v) {
@@ -434,6 +497,10 @@ function PlaybackScreen({ story, onExit }) {
     return () => {
       cancelledRef.current = true
       window.speechSynthesis.cancel()
+      if (gapTimerRef.current) {
+        clearTimeout(gapTimerRef.current)
+        gapTimerRef.current = null
+      }
     }
   }, [])
 
@@ -441,11 +508,28 @@ function PlaybackScreen({ story, onExit }) {
   const currentVideoSrc = (() => {
     if (!activeToken) return null
     if (activeToken.is_fingerspelling) {
-      const letter = letterSequence[activeLetter] || letterSequence[0]
-      return letter ? `/static/signs/_letters/${letter}.mp4` : null
+      const item = letterSequence[activeLetter] || letterSequence[0]
+      if (!item) return null
+      const folder = item.kind === 'digit' ? '_digits' : '_letters'
+      return `/static/signs/${folder}/${item.char}.mp4`
     }
     return activeToken.sign_video
   })()
+
+  // Explicit src+play hook for sign-video tokens. Runs whenever
+  // currentVideoSrc changes (i.e., when the active unit's video path
+  // changes). For back-to-back units of the same clip, React's string
+  // dep equality means this effect won't refire — that's fine, since
+  // the timer above drives the cadence, not this.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !currentVideoSrc) return
+    v.src = currentVideoSrc
+    v.loop = false
+    v.currentTime = 0
+    v.load()
+    v.play().catch(() => {})
+  }, [currentVideoSrc])
 
   return (
     <div className="screen">
@@ -503,11 +587,9 @@ function PlaybackScreen({ story, onExit }) {
             {currentVideoSrc ? (
               <video
                 ref={videoRef}
-                key={currentVideoSrc}
                 autoPlay
                 muted
                 playsInline
-                onEnded={onLetterVideoEnded}
               >
                 <source src={currentVideoSrc} type="video/mp4" />
               </video>
@@ -528,9 +610,16 @@ function PlaybackScreen({ story, onExit }) {
                 : ''}
               {letterSequence.length > 0 && (
                 <div className="letter-row">
-                  {letterSequence.map((ch, i) => (
-                    <span key={i} className={'letter-chip ' + (i === activeLetter ? 'active' : '')}>
-                      {ch.toUpperCase()}
+                  {letterSequence.map((item, i) => (
+                    <span
+                      key={i}
+                      className={
+                        'letter-chip ' +
+                        (i === activeLetter ? 'active ' : '') +
+                        (item.kind === 'digit' ? 'digit' : 'letter')
+                      }
+                    >
+                      {item.kind === 'digit' ? item.char : item.char.toUpperCase()}
                     </span>
                   ))}
                 </div>

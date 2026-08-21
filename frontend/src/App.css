@@ -407,6 +407,16 @@ input[type="file"] {
   color: #3a2a3a;
 }
 
+.letter-chip.digit {
+  background: #c7e9ff;
+  color: #23527c;
+}
+
+.letter-chip.digit.active {
+  background: #ffd6e7;
+  color: #3a2a3a;
+}
+
 /* ──────────────────────────────────────────────────────────────────
  * Playback controls
  * ────────────────────────────────────────────────────────────────── */
