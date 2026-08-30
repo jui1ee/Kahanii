@@ -33,6 +33,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 from functools import lru_cache
 from typing import List, Optional
 
@@ -130,11 +131,56 @@ _SKIP_LEMMAS = {"", " "}
 # Punctuation-only tokens that the UI should also drop.
 _PUNCT_ONLY = set(".,!?;:\"'`()[]{}-—–_/\\…")
 
+# Sentence boundary: [.?!]+ followed by whitespace+capital OR end-of-string.
+# Splitting on this pattern handles normal sentences without enabling spaCy's parser.
+_SENTENCE_SPLIT_RE = re.compile(r"[.?!]+(?=\s+[A-Z])|[.?!]+$", re.MULTILINE)
+
+# A fragment whose last whitespace-delimited token is a title-case abbreviation
+# (1–3 uppercase-starting chars, e.g. "Mr", "Dr", "St", "U", "vs").
+# Lowercase endings like "ran", "hid" do NOT match — they are real sentence endings.
+_ABBREV_TAIL_RE = re.compile(r"(?:^|\s)([A-Z][a-z]{0,2}|[A-Z]{1,3})$")
+
+
+def segment_sentences(text: str) -> list[str]:
+    """
+    Split *text* into sentence-level segments without enabling spaCy's parser.
+
+    Rules:
+    - Split on [.?!] followed by whitespace+capital-letter or end-of-string.
+    - Re-join fragments where the last word is a title-case abbreviation
+      (e.g. "Mr", "Dr", "St", "U") — these are not real sentence boundaries.
+    - Discard empty segments after stripping.
+
+    Returns a list of non-empty sentence strings in source order.
+    """
+    parts = _SENTENCE_SPLIT_RE.split(text)
+    parts = [p.strip() for p in parts if p and p.strip()]
+
+    # Re-join abbreviation fragments: if a fragment ends with a title-case
+    # abbreviation-shaped word, it was split at "Mr.", "Dr.", etc. — merge
+    # it with the immediately following fragment.
+    merged: list[str] = []
+    i = 0
+    while i < len(parts):
+        frag = parts[i]
+        if i + 1 < len(parts) and _ABBREV_TAIL_RE.search(frag):
+            merged.append(frag + " " + parts[i + 1])
+            i += 2
+        else:
+            merged.append(frag)
+            i += 1
+    return merged
+
 
 def tokenize(text: str) -> List[StoryToken]:
     """
     Run spaCy (tokenize + lemmatize only — no reordering, no parsing)
     over the input text and return an ordered list of StoryToken.
+
+    The text is first split into sentence-level segments by
+    segment_sentences(); each segment's tokens are stamped with a
+    scene_idx so the frontend can detect scene boundaries without
+    needing the punctuation that was already stripped by _PUNCT_ONLY.
 
     The function is pure: same input → same output, no side effects,
     no shared mutable state. Safe under concurrent requests.
@@ -147,27 +193,39 @@ def tokenize(text: str) -> List[StoryToken]:
     # This is ~5x faster on long stories and avoids accidentally
     # triggering any of the old ISL reordering logic.
     pipe = nlp.get_pipe("lemmatizer") if "lemmatizer" in nlp.pipe_names else None
-    doc = nlp(text, disable=["parser", "ner", "tagger", "attribute_ruler"]) if pipe is None else nlp(text)
+
+    segments = segment_sentences(text)
+    # Fall back to the full text as one segment if the splitter returns nothing
+    # (e.g. a single word with no terminal punctuation).
+    if not segments:
+        segments = [text.strip()]
 
     tokens: List[StoryToken] = []
-    for token in doc:
-        surface = token.text
-        lemma = (token.lemma_ or "").strip()
-        if not surface or not lemma:
-            continue
-        # Skip pure-whitespace and pure-punctuation tokens.
-        if lemma.lower() in _SKIP_LEMMAS:
-            continue
-        if all(ch in _PUNCT_ONLY for ch in surface):
-            continue
-        tokens.append(
-            StoryToken(
-                display_word=surface,
-                lemma=lemma.lower(),
-                sign_video=None,        # filled in by attach_sign_video
-                is_fingerspelling=False,
-            )
+    for scene_idx, segment in enumerate(segments):
+        doc = (
+            nlp(segment, disable=["parser", "ner", "tagger", "attribute_ruler"])
+            if pipe is None
+            else nlp(segment)
         )
+        for token in doc:
+            surface = token.text
+            lemma = (token.lemma_ or "").strip()
+            if not surface or not lemma:
+                continue
+            # Skip pure-whitespace and pure-punctuation tokens.
+            if lemma.lower() in _SKIP_LEMMAS:
+                continue
+            if all(ch in _PUNCT_ONLY for ch in surface):
+                continue
+            tokens.append(
+                StoryToken(
+                    display_word=surface,
+                    lemma=lemma.lower(),
+                    sign_video=None,        # filled in by attach_sign_video
+                    is_fingerspelling=False,
+                    scene_idx=scene_idx,
+                )
+            )
     return attach_sign_video(tokens)
 
 

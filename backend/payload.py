@@ -14,3 +14,7 @@ class StoryToken(BaseModel):
         False,
         description="True when the UI should play letter-by-letter finger spelling instead of a single sign.",
     )
+    scene_idx: int = Field(
+        0,
+        description="0-based sentence/scene index. All tokens in the same sentence share the same value.",
+    )

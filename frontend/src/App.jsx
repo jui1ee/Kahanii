@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import './App.css'
+import illustrations from './scenes/illustrations.json'
+import moods from './scenes/moods.json'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:3002'
 
@@ -282,6 +284,44 @@ function PlaybackScreen({ story, onExit }) {
   const [playing, setPlaying] = useState(false)
   const [speed, setSpeed] = useState(0.8)   // kid-friendly default; user can hit Normal for 1.0×
 
+  // ── Scene-level derived state ─────────────────────────────────────
+  // Inline derivation — no useState/useEffect needed; recomputed on each render
+  // from the already-tracked activeIdx. Scene transitions fire at the same
+  // render tick as token transitions, with no extra async overhead.
+  const activeSceneIdx = activeIdx >= 0 ? tokens[activeIdx].scene_idx : null
+
+  // Lemma set for the active scene — used by both illustration and mood lookups.
+  const sceneL = useMemo(() => {
+    if (activeSceneIdx === null) return new Set()
+    const s = new Set()
+    for (const t of tokens) {
+      if (t.scene_idx === activeSceneIdx) s.add(t.lemma)
+    }
+    return s
+  }, [activeSceneIdx, tokens])
+
+  // illustrations lookup: iterate keys in JSON order, first match wins.
+  const illustrationSrc = useMemo(() => {
+    for (const key of Object.keys(illustrations)) {
+      if (sceneL.has(key)) return illustrations[key]
+    }
+    return null
+  }, [sceneL])
+
+  // Hold the last non-null illustration so the panel never goes blank when
+  // the new scene has no keyword match.
+  const lastIllustrationRef = useRef(null)
+  if (illustrationSrc !== null) lastIllustrationRef.current = illustrationSrc
+  const displayIllustration = illustrationSrc ?? lastIllustrationRef.current
+
+  // Mood backdrop lookup: first matching key wins, fallback to "default".
+  const activeMood = useMemo(() => {
+    for (const key of Object.keys(moods)) {
+      if (key !== 'default' && sceneL.has(key)) return moods[key]
+    }
+    return moods['default']
+  }, [sceneL])
+
   const videoRef = useRef(null)
   const utteranceRef = useRef(null)
   const cancelledRef = useRef(false)
@@ -548,7 +588,82 @@ function PlaybackScreen({ story, onExit }) {
 
   return (
     <div className="screen">
+      {/* Full-screen mood backdrop — z-index: 0, behind all panels */}
+      <div
+        className="scene-backdrop"
+        style={{ background: activeMood.gradient }}
+      />
+
       <div className="playback">
+        {/* Left column: sign-video panel + illustration panel stacked */}
+        <div className="playback-left">
+          <div className="video-panel">
+            <div className="video-frame">
+              {currentVideoSrc ? (
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  muted
+                  playsInline
+                  preload="auto"
+                >
+                  <source src={currentVideoSrc} type="video/mp4" />
+                </video>
+              ) : (
+                <div style={{ textAlign: 'center', color: '#a78bd9' }}>
+                  <Mascot small mood="thinking" />
+                  <p style={{ marginTop: 12, fontWeight: 600 }}>Press Play to begin</p>
+                </div>
+              )}
+            </div>
+            {activeToken && (
+              <div className="video-caption">
+                <strong>{activeToken.display_word}</strong>
+                {activeToken.is_fingerspelling
+                  ? 'Fingerspelling…'
+                  : activeToken.sign_video
+                  ? 'Sign video'
+                  : ''}
+                {letterSequence.length > 0 && (
+                  <div className="letter-row">
+                    {letterSequence.map((item, i) => (
+                      <span
+                        key={i}
+                        className={
+                          'letter-chip ' +
+                          (i === activeLetter ? 'active ' : '') +
+                          (item.kind === 'digit' ? 'digit' : 'letter')
+                        }
+                      >
+                        {item.kind === 'digit' ? item.char : item.char.toUpperCase()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Scene illustration panel */}
+          <div className="scene-panel">
+            {displayIllustration ? (
+              <img
+                className="scene-illustration"
+                src={displayIllustration}
+                alt={activeSceneIdx !== null ? `Scene ${activeSceneIdx + 1} illustration` : 'scene illustration'}
+              />
+            ) : (
+              <Mascot small mood="thinking" />
+            )}
+            {activeSceneIdx !== null && (
+              <div className="video-caption" style={{ marginTop: 4 }}>
+                Scene {activeSceneIdx + 1}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right column: text highlight + controls (unchanged) */}
         <div className="text-panel">
           <div className="text-flow">
             {tokens.map((t, i) => {
@@ -595,53 +710,6 @@ function PlaybackScreen({ story, onExit }) {
               New story
             </button>
           </div>
-        </div>
-
-        <div className="video-panel">
-          <div className="video-frame">
-            {currentVideoSrc ? (
-              <video
-                ref={videoRef}
-                autoPlay
-                muted
-                playsInline
-                preload="auto"
-              >
-                <source src={currentVideoSrc} type="video/mp4" />
-              </video>
-            ) : (
-              <div style={{ textAlign: 'center', color: '#a78bd9' }}>
-                <Mascot small mood="thinking" />
-                <p style={{ marginTop: 12, fontWeight: 600 }}>Press Play to begin</p>
-              </div>
-            )}
-          </div>
-          {activeToken && (
-            <div className="video-caption">
-              <strong>{activeToken.display_word}</strong>
-              {activeToken.is_fingerspelling
-                ? 'Fingerspelling…'
-                : activeToken.sign_video
-                ? 'Sign video'
-                : ''}
-              {letterSequence.length > 0 && (
-                <div className="letter-row">
-                  {letterSequence.map((item, i) => (
-                    <span
-                      key={i}
-                      className={
-                        'letter-chip ' +
-                        (i === activeLetter ? 'active ' : '') +
-                        (item.kind === 'digit' ? 'digit' : 'letter')
-                      }
-                    >
-                      {item.kind === 'digit' ? item.char : item.char.toUpperCase()}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
       </div>
     </div>
