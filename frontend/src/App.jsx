@@ -273,7 +273,11 @@ function PreviewScreen({ story, onPlay, onChange }) {
  * /static/signs/_letters/<letter>.mp4 in sequence. The active letter
  * gets a highlighted chip below the video.
  *
- * Speed toggle changes utterance.rate (0.8 = slow, 1.0 = normal).
+ * Two independently adjustable durations drive the scheduler:
+ *   signDurationMs  — how long each sign-video unit is displayed (default 3500ms,
+ *                     covers p90 of real INCLUDE clips at 3.68s)
+ *   fsDurationMs    — how long each fingerspell letter unit is displayed (default 900ms)
+ * TTS utterance rate is fixed at 0.9 — deliberate accessibility choice for ages 4-10.
  * ──────────────────────────────────────────────────────────────────── */
 function PlaybackScreen({ story, onExit }) {
   const { tokens } = story
@@ -282,7 +286,8 @@ function PlaybackScreen({ story, onExit }) {
   const [activeLetter, setActiveLetter] = useState(0)
   const [letterSequence, setLetterSequence] = useState([]) // for fingerspell mode
   const [playing, setPlaying] = useState(false)
-  const [speed, setSpeed] = useState(0.8)   // kid-friendly default; user can hit Normal for 1.0×
+  const [signDurationMs, setSignDurationMs] = useState(3500)  // sign-video unit duration
+  const [fsDurationMs, setFsDurationMs] = useState(900)       // fingerspell letter unit duration
 
   // ── Scene-level derived state ─────────────────────────────────────
   // Inline derivation — no useState/useEffect needed; recomputed on each render
@@ -326,14 +331,6 @@ function PlaybackScreen({ story, onExit }) {
   const utteranceRef = useRef(null)
   const cancelledRef = useRef(false)
   const gapTimerRef = useRef(null)
-
-  // Kid-friendly default: each spoken unit (single letter for fingerspell
-  // words, whole word for sign-video) gets exactly UNIT_DURATION_MS of
-  // stage time. Audio starts at t=0; a setTimeout fires at UNIT_DURATION_MS
-  // to start the next unit. We deliberately do NOT wait for the audio
-  // utterance's onend or the <video> element's onended — both can fail to
-  // fire reliably, and either way the timer gives a predictable cadence.
-  const UNIT_DURATION_MS = 1350
 
   // Post-roll hold after the last unit speaks. Without this, the final
   // word/letter is shown for its full UNIT_DURATION_MS but then resets
@@ -479,7 +476,7 @@ function PlaybackScreen({ story, onExit }) {
       }
       const unit = spokenUnits[idx]
       const u = new SpeechSynthesisUtterance(unit.surface)
-      u.rate = speed
+      u.rate = 0.9   // fixed at 0.9 — deliberate accessibility choice for ages 4-10
       u.pitch = 1.05
       u.lang = 'en-US'
       u.onstart = () => {
@@ -497,18 +494,20 @@ function PlaybackScreen({ story, onExit }) {
       }
       utteranceRef.current = u
       window.speechSynthesis.speak(u)
-      // Schedule the advance. We rely on this timer alone — not on
-      // u.onend or <video>.onEnded — because those have been the source
-      // of stuck-state bugs in repeated same-clip units and short
-      // utterances.
+      // Schedule the advance using per-unit duration: sign-video tokens get
+      // signDurationMs (long enough for INCLUDE clips to play), fingerspell
+      // letter units get fsDurationMs (short, one letter at a time).
+      // We rely on this timer alone — not on u.onend or <video>.onEnded —
+      // because those have been the source of stuck-state bugs.
+      const isSignVideo = !tokens[unit.tokenIdx].is_fingerspelling
       gapTimerRef.current = setTimeout(() => {
         gapTimerRef.current = null
         speakUnit(idx + 1)
-      }, UNIT_DURATION_MS)
+      }, isSignVideo ? signDurationMs : fsDurationMs)
     }
 
     speakUnit(0)
-  }, [spokenUnits, speed])
+  }, [spokenUnits, signDurationMs, fsDurationMs, tokens])
 
   // Mirror the active (tokenIdx, letterIdx) into a ref. Kept for any future
   // async callback that needs the latest value without re-binding.
@@ -698,13 +697,27 @@ function PlaybackScreen({ story, onExit }) {
             <button className="big-button restart" onClick={restart}>
               ↻ Restart
             </button>
-            <div className="speed-toggle" role="group" aria-label="Speed">
-              <button className={speed <= 0.85 ? 'active' : ''} onClick={() => setSpeed(0.8)}>
-                Slow
-              </button>
-              <button className={speed > 0.85 ? 'active' : ''} onClick={() => setSpeed(1.0)}>
-                Normal
-              </button>
+            <div className="duration-controls" role="group" aria-label="Playback timing">
+              <label className="duration-row">
+                <span>🤟 Sign</span>
+                <input
+                  type="range"
+                  min={1000} max={5000} step={500}
+                  value={signDurationMs}
+                  onChange={(e) => setSignDurationMs(Number(e.target.value))}
+                />
+                <span className="duration-val">{(signDurationMs / 1000).toFixed(1)}s</span>
+              </label>
+              <label className="duration-row">
+                <span>🔡 Letter</span>
+                <input
+                  type="range"
+                  min={500} max={1500} step={250}
+                  value={fsDurationMs}
+                  onChange={(e) => setFsDurationMs(Number(e.target.value))}
+                />
+                <span className="duration-val">{(fsDurationMs / 1000).toFixed(2)}s</span>
+              </label>
             </div>
             <button className="alt-toggle" onClick={onExit}>
               New story

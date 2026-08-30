@@ -502,26 +502,45 @@ input[type="file"] {
   color: #3a2a3a;
 }
 
-.speed-toggle {
-  display: inline-flex;
+.duration-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   background: white;
-  border-radius: 999px;
-  padding: 6px;
+  border-radius: 20px;
+  padding: 10px 16px;
   box-shadow: 0 4px 14px rgba(167, 139, 217, 0.15);
+  min-width: 220px;
 }
 
-.speed-toggle button {
-  padding: 8px 20px;
-  border-radius: 999px;
-  font-size: 16px;
+.duration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
   font-weight: 700;
   color: #6a5a7a;
-  transition: all 0.15s ease;
+  cursor: default;
+  white-space: nowrap;
 }
 
-.speed-toggle button.active {
-  background: linear-gradient(135deg, #ffd6e7, #c7e9ff);
-  color: #3a2a3a;
+.duration-row span:first-child {
+  width: 68px;
+  flex-shrink: 0;
+}
+
+.duration-row input[type="range"] {
+  flex: 1;
+  accent-color: #a78bd9;
+  cursor: pointer;
+  height: 4px;
+}
+
+.duration-val {
+  width: 36px;
+  text-align: right;
+  color: #a78bd9;
+  flex-shrink: 0;
 }
 
 /* ──────────────────────────────────────────────────────────────────
