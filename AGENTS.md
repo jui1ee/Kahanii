@@ -50,18 +50,23 @@ curl -X POST -H 'Content-Type: application/json' \
 ### JavaScript (`frontend/src/`)
 - React 19, JSX (`.jsx` extension), no TypeScript
 - All API calls use `API_BASE` constant at top of [`App.jsx`](frontend/src/App.jsx:4) — never hardcode backend URLs
-- Playback advance is **timer-driven** (`UNIT_DURATION_MS = 1350 ms`) — do not change to `onended`/`onboundary` events; they are intentionally avoided due to browser bugs
+- Playback advance is **timer-driven** (`signDurationMs` for sign-video units, `fsDurationMs` for fingerspell letters) — do not change to `onended`/`onboundary` events; they are intentionally avoided due to browser bugs
+- `u.rate` is fixed at `0.9` (accessibility default for ages 4–10) — not user-controlled, not a variable
+- Illustration/mood scene data lives in [`frontend/src/scenes/`](frontend/src/scenes/) (bundled JSON) and stub SVGs in [`frontend/public/scenes/`](frontend/public/scenes/) — served statically, no backend endpoint
 - Inline styles for one-offs; CSS classes in `App.css` for reusable components
 
 ## Architecture
 
 ```
 Upload/Paste → POST /api/upload or /api/tokenize
-             → spaCy lemmatize → attach_sign_video() → List[StoryToken]
+             → segment_sentences() → spaCy lemmatize → attach_sign_video() → List[StoryToken]
              → PreviewScreen (word inventory)
              → PlaybackScreen (SpeechSynthesis + video <element> loop)
-                  ├── sign_video token  → /static/signs/<lemma>.mp4
-                  └── fingerspell token → /static/signs/_letters/<char>.mp4
+                  ├── sign_video token  → /static/signs/<lemma>.mp4  (signDurationMs timer)
+                  └── fingerspell token → /static/signs/_letters/<char>.mp4  (fsDurationMs timer)
+             → scene layer (per sentence, derived from token.scene_idx)
+                  ├── illustration panel → /scenes/<keyword>.svg
+                  └── mood backdrop     → gradient from scenes/moods.json
 ```
 
-`StoryToken` (defined in [`payload.py`](backend/payload.py)) is the single data contract between backend and frontend.
+`StoryToken` (defined in [`payload.py`](backend/payload.py)) is the single data contract between backend and frontend. Fields: `display_word`, `lemma`, `sign_video`, `is_fingerspelling`, `scene_idx`.
