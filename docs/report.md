@@ -1,4 +1,4 @@
-# ISL Hand-Sign Classification - Full ML Pipeline Report
+﻿# ISL Hand-Sign Classification - Full ML Pipeline Report
 
 **Dataset** `Hemg/Indian_sign_language_dataset` &nbsp;|&nbsp; **Task** 35-way ISL hand-sign
 classification &nbsp;|&nbsp; **Data** 42,745 frames &nbsp;|&nbsp;
@@ -626,7 +626,7 @@ present.
 
 ### 7.1 Confusion matrix
 
-![Confusion matrix, normalised and error-only](figures/ev_01_confusion_matrix_resnet18_lr0.0003_bs64.png)
+![Confusion matrix, row-normalised and errors-only](confusion_matrix.png)
 
 *Figure: Confusion matrix, normalised and error-only*
 
